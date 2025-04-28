@@ -1,0 +1,18 @@
+version: '3.8' # версия docker-compose — это формат конфигурационного файла
+
+services: # все приложения (сервисы), которые будут запущены
+  postgres: # имя нашего сервиса
+    image: postgres:15 # официальный образ PostgreSQL версии 15
+    container_name: postgres-db # имя контейнера (по желанию)
+    restart: unless-stopped # авто-перезапуск, если он упал
+    environment:
+      POSTGRES_USER: postgres     # имя пользователя
+      POSTGRES_PASSWORD: postgres # пароль
+      POSTGRES_DB: first_app_db      # имя базы
+    ports:
+      - '5432:5432' # связываем порт БД внутри контейнера с портом хоста
+    volumes:
+      - pgdata:/var/lib/postgresql/data # сохраняем данные БД между перезапусками
+
+volumes:
+  pgdata: # volume — это как внешний жесткий диск для контейнера
