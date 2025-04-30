@@ -13,7 +13,6 @@ import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { UserService } from './user.service';
 import { ApiBearerAuth, ApiBody, ApiOkResponse, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { UserResponseDto } from './dto/user-responce.dto';
-import { plainToInstance } from 'class-transformer';
 import { UpdateUserDto } from './dto/update-user.dto';
 
 @ApiTags('User')

@@ -7,6 +7,7 @@ import { ConfigService } from '@nestjs/config';
 
 describe('UserService', () => {
   let service: UserService;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let repository: Repository<User>;
 
   beforeEach(async () => {
@@ -21,7 +22,13 @@ describe('UserService', () => {
               skip: jest.fn().mockReturnThis(),
               take: jest.fn().mockReturnThis(),
               getMany: jest.fn().mockResolvedValue([
-                { id: 1, login: 'user1', email: 'user1@example.com', age: 25, description: 'desc' },
+                {
+                  id: 1,
+                  login: 'user1',
+                  email: 'user1@example.com',
+                  age: 25,
+                  description: 'desc',
+                },
               ]),
             })),
           },
