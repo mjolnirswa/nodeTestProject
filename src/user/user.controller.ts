@@ -3,17 +3,29 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
   Param,
   ParseIntPipe,
   Patch,
+  Post,
   Query,
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { UserService } from './user.service';
-import { ApiBearerAuth, ApiBody, ApiOkResponse, ApiQuery, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBadRequestResponse,
+  ApiBearerAuth,
+  ApiBody,
+  ApiOkResponse,
+  ApiParam,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
 import { UserResponseDto } from './dto/user-responce.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { CurrentUser } from './decorator/current-user.decorator';
+import { TransferBalanceDto } from './dto/transfer-balance.dto';
 
 @ApiTags('User')
 @UseGuards(JwtAuthGuard)
@@ -54,5 +66,44 @@ export class UserController {
   @ApiOkResponse({ description: 'Пользователь успешно удалён' })
   async deleteUser(@Param('id', ParseIntPipe) id: number): Promise<void> {
     return this.userService.deleteUser(id);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('transfer')
+  @ApiBody({ type: TransferBalanceDto })
+  @ApiOkResponse({ description: 'Перевод выполнен успешно' })
+  @ApiBadRequestResponse({ description: 'Ошибка валидации или недостаточно средств' })
+  async transfer(@CurrentUser() user: { id: number }, @Body() dto: TransferBalanceDto) {
+    return this.userService.transferBalance(user.id, dto.toUserId, dto.amount);
+  }
+
+  @Patch(':id/add-balance')
+  @HttpCode(204)
+  @ApiOkResponse({ description: 'Баланс успешно пополнен' })
+  @ApiBadRequestResponse({ description: 'Некорректная сумма' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        amount: {
+          type: 'number',
+          example: 50.0,
+          description: 'Сумма пополнения (в долларах)',
+        },
+      },
+      required: ['amount'],
+    },
+  })
+  @ApiParam({
+    name: 'id',
+    type: Number,
+    description: 'ID пользователя, которому нужно пополнить баланс',
+    example: 1,
+  })
+  async addBalance(
+    @Param('id', ParseIntPipe) id: number,
+    @Body('amount') amount: number,
+  ): Promise<void> {
+    return this.userService.addBalance(id, amount);
   }
 }

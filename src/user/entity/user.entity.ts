@@ -1,5 +1,6 @@
 import { Exclude } from 'class-transformer';
-import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm';
+import { Avatar } from 'src/avatar/entity/avatar.entity';
+import { Column, Entity, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
 
 @Entity()
 export class User {
@@ -24,4 +25,10 @@ export class User {
 
   @Column({ nullable: true })
   refreshToken: string | null;
+
+  @OneToMany(() => Avatar, (avatar) => avatar.user)
+  avatars: Avatar[];
+
+  @Column('decimal', { precision: 10, scale: 2, default: 0 })
+  balance: number;
 }

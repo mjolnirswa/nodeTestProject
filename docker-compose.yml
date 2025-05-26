@@ -1,18 +1,43 @@
-version: '3.8' # версия docker-compose — это формат конфигурационного файла
+version: '3.9' # версия docker-compose — это формат конфигурационного файла
 
 services: # все приложения (сервисы), которые будут запущены
+  minio:
+    image: minio/minio
+    command: server --console-address ":9001" /data
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_storage:/data
+
   postgres: # имя нашего сервиса
     image: postgres:15 # официальный образ PostgreSQL версии 15
     container_name: postgres-db # имя контейнера (по желанию)
     restart: unless-stopped # авто-перезапуск, если он упал
     environment:
-      POSTGRES_USER: postgres     # имя пользователя
+      POSTGRES_USER: postgres # имя пользователя
       POSTGRES_PASSWORD: postgres # пароль
-      POSTGRES_DB: first_app_db      # имя базы
+      POSTGRES_DB: first_app_db # имя базы
     ports:
       - '5432:5432' # связываем порт БД внутри контейнера с портом хоста
     volumes:
       - pgdata:/var/lib/postgresql/data # сохраняем данные БД между перезапусками
+  
+
+  redis:
+    image: redis:alpine3.16
+    container_name: redis-wsbe
+    env_file: .env
+    command: >
+      --requirepass ${REDIS_PASSWORD} --port ${REDIS_PORT}
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
 
 volumes:
+  minio_storage:
   pgdata: # volume — это как внешний жесткий диск для контейнера
+  redis:

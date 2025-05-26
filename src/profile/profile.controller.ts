@@ -16,8 +16,8 @@ export class ProfileController {
   @Get('my')
   @ApiOkResponse({ type: UserResponseDto, description: 'Информация о текущем пользователе' })
   @ApiUnauthorizedResponse({ description: 'Unauthorized: Неверный или отсутствующий токен' })
-  async getMyProfile(@CurrentUser() user: { userId: number }): Promise<UserResponseDto> {
-    const foundedUser = await this.userService.findById(user.userId);
+  async getMyProfile(@CurrentUser() user: { id: number }): Promise<UserResponseDto> {
+    const foundedUser = await this.userService.findById(user.id);
 
     return plainToInstance(UserResponseDto, foundedUser, { excludeExtraneousValues: true });
   }
