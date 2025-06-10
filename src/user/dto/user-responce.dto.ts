@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { Expose } from 'class-transformer';
+import { Expose, Type } from 'class-transformer';
+import { AvatarPreviewDto } from 'src/avatar/dto/avatar-preview.dto';
 
 export class UserResponseDto {
   @ApiProperty({ example: 1, description: 'ID пользователя' })
@@ -21,4 +22,12 @@ export class UserResponseDto {
   @ApiProperty({ example: 'Люблю пить гинес', description: 'Описание пользователя' })
   @Expose()
   description: string;
+
+  @Expose()
+  @Type(() => AvatarPreviewDto)
+  avatars: AvatarPreviewDto[];
+
+  @ApiProperty({ example: 100.5, description: 'Баланс пользователя в долларах' })
+  @Expose()
+  balance: number;
 }
