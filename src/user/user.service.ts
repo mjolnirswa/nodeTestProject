@@ -1,18 +1,19 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not } from 'typeorm';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { Repository, Not, DataSource } from 'typeorm';
 import { User } from './entity/user.entity';
 import { ConfigService } from '@nestjs/config';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
-import * as bcrypt from 'bcrypt';
 import { UserResponseDto } from './dto/user-responce.dto';
 import { plainToInstance } from 'class-transformer';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Cache } from 'cache-manager';
-import { Transactional } from 'typeorm-transactional';
+import { IsolationLevel, Transactional } from 'typeorm-transactional';
 import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
 import { Logger } from 'winston';
+import { hashPassword } from '../utils/hash.util';
+import { RefreshToken } from 'src/auth/entity/refresh-token.entity';
 
 @Injectable()
 export class UserService {
@@ -20,14 +21,17 @@ export class UserService {
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
     private readonly configService: ConfigService,
+    @InjectDataSource()
+    private readonly dataSource: DataSource,
+    @InjectRepository(RefreshToken)
+    private readonly refreshTokenRepository: Repository<RefreshToken>,
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
     @Inject(WINSTON_MODULE_PROVIDER)
     private readonly logger: Logger,
   ) {}
 
   async create(createUserDto: CreateUserDto): Promise<User> {
-    const salt = Number(this.configService.get('BCRYPT_SALT_ROUNDS', '10'));
-    const hashedPassword = await bcrypt.hash(createUserDto.password, salt);
+    const hashedPassword = await hashPassword(createUserDto.password);
 
     const user = this.userRepository.create({
       ...createUserDto,
@@ -55,8 +59,17 @@ export class UserService {
     return this.userRepository.findOneBy({ login });
   }
 
-  async updateRefreshToken(userId: number, refreshToken: string) {
-    await this.userRepository.update(userId, { refreshToken });
+  async updateRefreshToken(userId: number, refreshToken: string): Promise<void> {
+    await this.refreshTokenRepository.delete({ user: { id: userId } });
+
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 дней
+
+    await this.refreshTokenRepository.save({
+      token: refreshToken,
+      user: { id: userId },
+      expiresAt,
+    });
+
     this.logger.verbose(`🔑 Refresh token обновлён для userId=${userId}`);
   }
 
@@ -96,12 +109,11 @@ export class UserService {
 
     if (!user) {
       this.logger.warn(`⚠️ Пользователь с ID ${id} не найден`);
-      throw new Error('User not found');
+      throw new NotFoundException('User not found');
     }
 
     if (updateUserDto.password) {
-      const salt = Number(this.configService.get('BCRYPT_SALT_ROUNDS', '10'));
-      updateUserDto.password = await bcrypt.hash(updateUserDto.password, salt);
+      updateUserDto.password = await hashPassword(updateUserDto.password);
     }
 
     Object.assign(user, updateUserDto);
@@ -112,37 +124,58 @@ export class UserService {
   }
 
   async deleteUser(id: number): Promise<void> {
-    await this.userRepository.delete(id);
+    await this.userRepository.softDelete(id);
     this.logger.info(`🗑️ Пользователь с ID ${id} удалён`);
   }
 
-  @Transactional()
+  @Transactional({ isolationLevel: IsolationLevel.READ_COMMITTED })
   async transferBalance(fromId: number, toId: number, amount: number): Promise<void> {
     this.logger.verbose(`💸 Перевод $${amount} от user ${fromId} к user ${toId}`);
 
-    const fromUser = await this.userRepository.findOneBy({ id: fromId });
-    const toUser = await this.userRepository.findOneBy({ id: toId });
-
-    if (!fromUser || !toUser) {
-      throw new NotFoundException('Пользователь не найден');
-    }
-
-    const fromBalance = Number(fromUser.balance);
-    const toBalance = Number(toUser.balance);
     const transferAmount = Number(amount);
-
     if (transferAmount <= 0 || isNaN(transferAmount)) {
       throw new BadRequestException('Сумма должна быть положительным числом');
     }
 
-    if (fromBalance < transferAmount) {
-      throw new BadRequestException('Недостаточно средств');
-    }
+    await this.dataSource.transaction(async (manager) => {
+      const [smallerId, largerId] = fromId < toId ? [fromId, toId] : [toId, fromId];
 
-    fromUser.balance = Number((fromBalance - transferAmount).toFixed(2));
-    toUser.balance = Number((toBalance + transferAmount).toFixed(2));
+      const users = await manager
+        .createQueryBuilder(User, 'user')
+        .setLock('pessimistic_write')
+        .where('user.id IN (:...ids)', { ids: [smallerId, largerId] })
+        .orderBy('user.id', 'ASC')
+        .getMany();
 
-    await this.userRepository.save([fromUser, toUser]);
+      if (users.length !== 2) {
+        throw new NotFoundException('Один или оба пользователя не найдены');
+      }
+
+      const fromUser = users.find((u) => u.id === fromId)!;
+      const toUser = users.find((u) => u.id === toId)!;
+
+      if (Number(fromUser.balance) < transferAmount) {
+        throw new BadRequestException('Недостаточно средств');
+      }
+
+      await manager
+        .createQueryBuilder()
+        .update(User)
+        .set({
+          balance: () => `
+            CASE 
+              WHEN id = ${fromId} THEN balance - ${transferAmount}
+              WHEN id = ${toId} THEN balance + ${transferAmount}
+              ELSE balance
+            END
+          `,
+        })
+        .where('id IN (:...ids)', { ids: [fromId, toId] })
+        .execute();
+
+      return { fromUser, toUser, transferAmount };
+    });
+
     this.logger.info(`✅ Успешный перевод $${transferAmount} от ${fromId} к ${toId}`);
   }
 

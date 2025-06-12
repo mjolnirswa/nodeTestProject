@@ -1,4 +1,4 @@
-import { Body, Controller, Post, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Post, Res, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import {
   ApiTags,
   ApiOkResponse,
@@ -15,12 +15,15 @@ import { LoginResponseDto } from './dto/login-responce.dto';
 import { JwtAuthGuard } from './guard/jwt-auth.guard';
 import { CurrentUser } from 'src/user/decorator/current-user.decorator';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { Public } from './decorators/public.decorator';
+import { Response } from 'express';
 
 @ApiTags('Auth')
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
+  @Public()
   @Post('register')
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
   @ApiOkResponse({ type: UserResponseDto, description: 'Пользователь успешно зарегистрирован' })
@@ -29,14 +32,27 @@ export class AuthController {
     return this.authService.register(createUserDto);
   }
 
+  @Public()
   @Post('login')
   @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
   @ApiOkResponse({ type: LoginResponseDto, description: 'Успешная авторизация' })
   @ApiUnauthorizedResponse({ description: 'Неверные учетные данные' })
-  async login(@Body() loginDto: LoginDto) {
-    return this.authService.login(loginDto);
+  async login(
+    @Body() loginDto: LoginDto,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<{ access_token: string }> {
+    const { access_token, refresh_token } = await this.authService.login(loginDto);
+
+    res.cookie('refreshToken', refresh_token, {
+      httpOnly: true,
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    return { access_token };
   }
 
+  @Public()
   @Post('refresh')
   @ApiBody({ type: RefreshTokenDto })
   @ApiOkResponse({ description: 'Обновление access и refresh токенов' })

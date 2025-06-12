@@ -10,6 +10,9 @@ import { LoginResponseDto } from './dto/login-responce.dto';
 import { ConfigService } from '@nestjs/config';
 import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
 import { Logger } from 'winston';
+import { InjectRepository } from '@nestjs/typeorm';
+import { RefreshToken } from './entity/refresh-token.entity';
+import { Repository } from 'typeorm';
 
 @Injectable()
 export class AuthService {
@@ -19,6 +22,8 @@ export class AuthService {
     private readonly configService: ConfigService,
     @Inject(WINSTON_MODULE_PROVIDER)
     private readonly logger: Logger,
+    @InjectRepository(RefreshToken)
+    private readonly refreshTokenRepository: Repository<RefreshToken>,
   ) {}
 
   async register(createUserDto: CreateUserDto): Promise<UserResponseDto> {
@@ -47,7 +52,7 @@ export class AuthService {
 
     const user = await this.userService.findByLogin(loginDto.login);
     if (!user) {
-      this.logger.warn(`Неудачная попытка входа: логин ${loginDto.login} не найден`);
+      this.logger.warn(`Логин ${loginDto.login} не найден`);
       throw new UnauthorizedException('Invalid credentials');
     }
 
@@ -67,7 +72,13 @@ export class AuthService {
       expiresIn: this.configService.get<string>('JWT_REFRESH_TOKEN_EXPIRATION'),
     });
 
-    await this.userService.updateRefreshToken(user.id, refresh_token);
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 дней
+
+    await this.refreshTokenRepository.save({
+      token: refresh_token,
+      user: { id: user.id },
+      expiresAt,
+    });
 
     this.logger.log('info', `🔐 Пользователь ${user.login} вошёл в систему`);
 
@@ -75,15 +86,26 @@ export class AuthService {
   }
 
   async refresh(refreshToken: string): Promise<LoginResponseDto> {
-    this.logger.verbose(`Запрос на обновление токена`);
+    this.logger.verbose(`♻️ Запрос на обновление токена`);
 
-    const payload = await this.jwtService.verifyAsync(refreshToken);
-    const user = await this.userService.findById(payload.sub);
-
-    if (!user || user.refreshToken !== refreshToken) {
-      this.logger.warn(`Невалидный refresh токен для userId: ${payload.sub}`);
+    try {
+      await this.jwtService.verifyAsync(refreshToken);
+    } catch {
+      this.logger.warn(`Не удалось декодировать refresh токен`);
       throw new UnauthorizedException('Invalid refresh token');
     }
+
+    const tokenInDb = await this.refreshTokenRepository.findOne({
+      where: { token: refreshToken },
+      relations: ['user'],
+    });
+
+    if (!tokenInDb || tokenInDb.expiresAt < new Date()) {
+      this.logger.warn(`Просроченный или несуществующий refresh токен`);
+      throw new UnauthorizedException('Invalid or expired refresh token');
+    }
+
+    const user = tokenInDb.user;
 
     const newPayload = { sub: user.id };
 
@@ -95,9 +117,17 @@ export class AuthService {
       expiresIn: this.configService.get<string>('JWT_REFRESH_TOKEN_EXPIRATION'),
     });
 
-    await this.userService.updateRefreshToken(user.id, newRefreshToken);
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
-    this.logger.log('info', `♻️ Токены обновлены для userId: ${user.id}`);
+    await this.refreshTokenRepository.save({
+      token: newRefreshToken,
+      user: { id: user.id },
+      expiresAt,
+    });
+
+    await this.refreshTokenRepository.delete({ token: refreshToken });
+
+    this.logger.log('info', `✅ Refresh токены обновлены для userId: ${user.id}`);
 
     return {
       access_token: newAccessToken,
@@ -106,7 +136,9 @@ export class AuthService {
   }
 
   async logout(userId: number) {
-    await this.userService.updateRefreshToken(userId, null);
+    // Удаляем все refresh токены для этого пользователя
+    await this.refreshTokenRepository.delete({ user: { id: userId } });
+
     this.logger.log('info', `🚪 Пользователь с ID ${userId} вышел из системы`);
   }
 }

@@ -17,7 +17,7 @@ export class UserResponseDto {
 
   @ApiProperty({ example: 25, description: 'Возраст пользователя' })
   @Expose()
-  age: number;
+  age: string;
 
   @ApiProperty({ example: 'Люблю пить гинес', description: 'Описание пользователя' })
   @Expose()

@@ -1,6 +1,15 @@
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  UpdateDateColumn,
+  DeleteDateColumn,
+  OneToMany,
+} from 'typeorm';
 import { Exclude } from 'class-transformer';
+import { RefreshToken } from 'src/auth/entity/refresh-token.entity';
 import { Avatar } from 'src/avatar/entity/avatar.entity';
-import { Column, Entity, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
 
 @Entity()
 export class User {
@@ -23,12 +32,21 @@ export class User {
   @Column({ length: 1000 })
   description: string;
 
-  @Column({ nullable: true })
-  refreshToken: string | null;
+  @OneToMany(() => RefreshToken, (token) => token.user)
+  refreshTokens: RefreshToken[];
 
   @OneToMany(() => Avatar, (avatar) => avatar.user)
   avatars: Avatar[];
 
   @Column('decimal', { precision: 10, scale: 2, default: 0 })
   balance: number;
+
+  @CreateDateColumn()
+  createdAt: Date;
+
+  @UpdateDateColumn()
+  updatedAt: Date;
+
+  @DeleteDateColumn()
+  deletedAt?: Date;
 }
