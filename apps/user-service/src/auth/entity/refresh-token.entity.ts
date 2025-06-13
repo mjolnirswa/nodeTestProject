@@ -1,4 +1,3 @@
-// src/auth/entity/refresh-token.entity.ts
 import { Column, Entity, ManyToOne, PrimaryGeneratedColumn, CreateDateColumn } from 'typeorm';
 import { User } from '../../user/entity/user.entity';
 
