@@ -141,4 +141,15 @@ export class AuthService {
 
     this.logger.log('info', `🚪 Пользователь с ID ${userId} вышел из системы`);
   }
+
+  async verifyAccessToken(token: string): Promise<{ sub: number }> {
+    try {
+      return await this.jwtService.verifyAsync(token, {
+        secret: this.configService.getOrThrow<string>('JWT_SECRET'),
+      });
+    } catch (e) {
+      this.logger.warn(`❌ Невалидный access токен: ${e.message}`);
+      throw new UnauthorizedException('Invalid access token');
+    }
+  }
 }

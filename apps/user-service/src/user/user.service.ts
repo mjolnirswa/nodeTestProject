@@ -14,6 +14,7 @@ import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
 import { Logger } from 'winston';
 import { RefreshToken } from '../auth/entity/refresh-token.entity';
 import { hashPassword } from '@app/common';
+import { ClientProxy } from '@nestjs/microservices';
 
 @Injectable()
 export class UserService {
@@ -28,7 +29,12 @@ export class UserService {
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
     @Inject(WINSTON_MODULE_PROVIDER)
     private readonly logger: Logger,
+    @Inject('NATS_CLIENT') private readonly natsClient: ClientProxy,
   ) {}
+
+  async onModuleInit() {
+    await this.natsClient.connect();
+  }
 
   async create(createUserDto: CreateUserDto): Promise<User> {
     const hashedPassword = await hashPassword(createUserDto.password);
@@ -127,7 +133,6 @@ export class UserService {
     await this.userRepository.softDelete(id);
     this.logger.info(`🗑️ Пользователь с ID ${id} удалён`);
   }
-
   @Transactional({ isolationLevel: IsolationLevel.READ_COMMITTED })
   async transferBalance(fromId: number, toId: number, amount: number): Promise<void> {
     this.logger.verbose(`💸 Перевод $${amount} от user ${fromId} к user ${toId}`);
@@ -151,8 +156,12 @@ export class UserService {
         throw new NotFoundException('Один или оба пользователя не найдены');
       }
 
-      const fromUser = users.find((u) => u.id === fromId)!;
-      const toUser = users.find((u) => u.id === toId)!;
+      const fromUser = users.find((u) => u.id === fromId);
+      const toUser = users.find((u) => u.id === toId);
+
+      if (!fromUser || !toUser) {
+        throw new NotFoundException('Один или оба пользователя не найдены');
+      }
 
       if (Number(fromUser.balance) < transferAmount) {
         throw new BadRequestException('Недостаточно средств');
@@ -164,19 +173,28 @@ export class UserService {
         .set({
           balance: () => `
             CASE 
-              WHEN id = ${fromId} THEN balance - ${transferAmount}
-              WHEN id = ${toId} THEN balance + ${transferAmount}
+              WHEN id = :fromId THEN balance - :amount
+              WHEN id = :toId THEN balance + :amount
               ELSE balance
-            END
-          `,
+            END`,
         })
         .where('id IN (:...ids)', { ids: [fromId, toId] })
+        .setParameters({ fromId, toId, amount: transferAmount })
         .execute();
-
-      return { fromUser, toUser, transferAmount };
     });
 
     this.logger.info(`✅ Успешный перевод $${transferAmount} от ${fromId} к ${toId}`);
+
+    await Promise.all([
+      this.natsClient.emit('balance_updated', {
+        userId: fromId.toString(),
+        amount: -transferAmount,
+      }),
+      this.natsClient.emit('balance_updated', {
+        userId: toId.toString(),
+        amount: transferAmount,
+      }),
+    ]);
   }
 
   async addBalance(userId: number, amount: number): Promise<void> {

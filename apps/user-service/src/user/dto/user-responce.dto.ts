@@ -30,4 +30,15 @@ export class UserResponseDto {
   @ApiProperty({ example: 100.5, description: 'Баланс пользователя в долларах' })
   @Expose()
   balance: number;
+
+  @ApiProperty({ example: '2025-06-13T12:00:00.000Z', description: 'Дата создания пользователя' })
+  @Expose()
+  createdAt: Date;
+
+  @ApiProperty({
+    example: '2025-06-13T12:30:00.000Z',
+    description: 'Дата последнего обновления пользователя',
+  })
+  @Expose()
+  updatedAt: Date;
 }

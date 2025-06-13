@@ -11,12 +11,14 @@ import { BalanceResetModule } from './balance-reset/balance-reset.module';
 import { BullModule } from '@nestjs/bull';
 import { WinstonModule } from 'nest-winston';
 import { winstonOptions } from '@app/logger';
+import { NatsClientModule } from './nats/nats-client.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
     }),
+    NatsClientModule,
     WinstonModule.forRoot(winstonOptions),
     DatabaseModule,
     UserModule,
