@@ -10,7 +10,7 @@ import { RedisCacheModule } from './cache/cache.module';
 import { BalanceResetModule } from './balance-reset/balance-reset.module';
 import { BullModule } from '@nestjs/bull';
 import { WinstonModule } from 'nest-winston';
-import { winstonOptions } from './logger/logger.config';
+import { winstonOptions } from '@app/logger';
 
 @Module({
   imports: [
