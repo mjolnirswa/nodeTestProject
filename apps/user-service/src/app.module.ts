@@ -12,9 +12,12 @@ import { BullModule } from '@nestjs/bull';
 import { NatsClientModule } from './nats/nats-client.module';
 import { LoggerModule } from 'nestjs-pino';
 import { pinoHttpOptions } from '@app/logger';
+import { PrometheusModule } from '@willsoto/nestjs-prometheus';
+import { MetricsController } from './metrics.controller';
 
 @Module({
   imports: [
+    PrometheusModule.register(),
     ConfigModule.forRoot({
       isGlobal: true,
     }),
@@ -41,7 +44,7 @@ import { pinoHttpOptions } from '@app/logger';
     }),
     BalanceResetModule,
   ],
-  controllers: [ProfileController],
+  controllers: [ProfileController, MetricsController],
   providers: [],
 })
 export class AppModule {}

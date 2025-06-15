@@ -14,6 +14,8 @@ import { RefreshToken } from '../auth/entity/refresh-token.entity';
 import { hashPassword } from '@app/common';
 import { ClientProxy } from '@nestjs/microservices';
 import { PinoLogger } from 'nestjs-pino';
+import { InjectMetric } from '@willsoto/nestjs-prometheus';
+import { Counter, Histogram } from 'prom-client';
 
 @Injectable()
 export class UserService {
@@ -28,6 +30,14 @@ export class UserService {
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
     private readonly logger: PinoLogger,
     @Inject('NATS_CLIENT') private readonly natsClient: ClientProxy,
+    @InjectMetric('user_created_total')
+    private readonly userCreatedTotal: Counter<string>,
+    @InjectMetric('user_create_duration_seconds')
+    private readonly userCreateDuration: Histogram<string>,
+    @InjectMetric('balance_transfer_total')
+    private readonly transferTotal: Counter<'result'>,
+    @InjectMetric('balance_transfer_duration_seconds')
+    private readonly transferDuration: Histogram,
   ) {
     this.logger.setContext(UserService.name);
   }
@@ -37,17 +47,19 @@ export class UserService {
   }
 
   async create(createUserDto: CreateUserDto): Promise<User> {
-    const hashedPassword = await hashPassword(createUserDto.password);
+    const end = this.userCreateDuration.startTimer();
 
-    const user = this.userRepository.create({
-      ...createUserDto,
-      password: hashedPassword,
-    });
+    try {
+      const hashedPassword = await hashPassword(createUserDto.password);
+      const user = this.userRepository.create({ ...createUserDto, password: hashedPassword });
+      const saved = await this.userRepository.save(user);
 
-    const savedUser = await this.userRepository.save(user);
-    this.logger.info({ id: savedUser.id, login: savedUser.login }, 'user created');
-
-    return savedUser;
+      this.userCreatedTotal.inc();
+      this.logger.info({ id: saved.id, login: saved.login }, 'user created');
+      return saved;
+    } finally {
+      end();
+    }
   }
 
   async findById(id: number): Promise<User | null> {
@@ -133,68 +145,75 @@ export class UserService {
     await this.userRepository.softDelete(id);
     this.logger.info({ id }, 'user deleted');
   }
+
   @Transactional({ isolationLevel: IsolationLevel.READ_COMMITTED })
   async transferBalance(fromId: number, toId: number, amount: number): Promise<void> {
     const transferAmount = Number(amount);
-    if (transferAmount <= 0 || isNaN(transferAmount)) {
+    if (transferAmount <= 0 || Number.isNaN(transferAmount)) {
       throw new BadRequestException('Сумма должна быть положительным числом');
     }
 
-    this.logger.debug({ fromId, toId, amount: transferAmount }, 'starting balance transfer');
+    const stopDuration = this.transferDuration.startTimer();
+    let resultLabel: 'success' | 'error' = 'success';
 
-    await this.dataSource.transaction(async (manager) => {
-      const [smallerId, largerId] = fromId < toId ? [fromId, toId] : [toId, fromId];
+    try {
+      this.logger.debug({ fromId, toId, amount: transferAmount }, 'starting balance transfer');
 
-      const users = await manager
-        .createQueryBuilder(User, 'user')
-        .setLock('pessimistic_write')
-        .where('user.id IN (:...ids)', { ids: [smallerId, largerId] })
-        .orderBy('user.id', 'ASC')
-        .getMany();
+      await this.dataSource.transaction(async (manager) => {
+        const [smallerId, largerId] = fromId < toId ? [fromId, toId] : [toId, fromId];
 
-      if (users.length !== 2) {
-        throw new NotFoundException('Один или оба пользователя не найдены');
-      }
+        const users = await manager
+          .createQueryBuilder(User, 'user')
+          .setLock('pessimistic_write')
+          .where('user.id IN (:...ids)', { ids: [smallerId, largerId] })
+          .orderBy('user.id', 'ASC')
+          .getMany();
 
-      const fromUser = users.find((u) => u.id === fromId);
-      const toUser = users.find((u) => u.id === toId);
+        if (users.length !== 2) throw new NotFoundException('Один или оба пользователя не найдены');
 
-      if (!fromUser || !toUser) {
-        throw new NotFoundException('Один или оба пользователя не найдены');
-      }
+        const fromUser = users.find((u) => u.id === fromId)!;
 
-      if (Number(fromUser.balance) < transferAmount) {
-        throw new BadRequestException('Недостаточно средств');
-      }
+        if (Number(fromUser.balance) < transferAmount) {
+          throw new BadRequestException('Недостаточно средств');
+        }
 
-      await manager
-        .createQueryBuilder()
-        .update(User)
-        .set({
-          balance: () => `
-            CASE 
+        await manager
+          .createQueryBuilder()
+          .update(User)
+          .set({
+            balance: () => `
+            CASE
               WHEN id = :fromId THEN balance - :amount
-              WHEN id = :toId THEN balance + :amount
+              WHEN id = :toId   THEN balance + :amount
               ELSE balance
             END`,
-        })
-        .where('id IN (:...ids)', { ids: [fromId, toId] })
-        .setParameters({ fromId, toId, amount: transferAmount })
-        .execute();
-    });
+          })
+          .where('id IN (:...ids)', { ids: [fromId, toId] })
+          .setParameters({ fromId, toId, amount: transferAmount })
+          .execute();
+      });
 
-    this.logger.info({ fromId, toId, amount: transferAmount }, 'balance transfer successful');
+      this.transferTotal.inc({ result: 'success' });
+      this.logger.info({ fromId, toId, amount: transferAmount }, 'balance transfer successful');
 
-    await Promise.all([
-      this.natsClient.emit('balance_updated', {
-        userId: fromId.toString(),
-        amount: -transferAmount,
-      }),
-      this.natsClient.emit('balance_updated', {
-        userId: toId.toString(),
-        amount: transferAmount,
-      }),
-    ]);
+      await Promise.all([
+        this.natsClient.emit('balance_updated', {
+          userId: fromId.toString(),
+          amount: -transferAmount,
+        }),
+        this.natsClient.emit('balance_updated', {
+          userId: toId.toString(),
+          amount: transferAmount,
+        }),
+      ]);
+    } catch (error) {
+      resultLabel = 'error';
+      this.transferTotal.inc({ result: 'error' });
+      this.logger.error({ err: error, fromId, toId }, 'balance transfer failed');
+      throw error;
+    } finally {
+      stopDuration({ result: resultLabel });
+    }
   }
 
   async addBalance(userId: number, amount: number): Promise<void> {
