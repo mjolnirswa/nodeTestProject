@@ -9,9 +9,9 @@ import { AvatarModule } from './avatar/avatar.module';
 import { RedisCacheModule } from './cache/cache.module';
 import { BalanceResetModule } from './balance-reset/balance-reset.module';
 import { BullModule } from '@nestjs/bull';
-import { WinstonModule } from 'nest-winston';
-import { winstonOptions } from '@app/logger';
 import { NatsClientModule } from './nats/nats-client.module';
+import { LoggerModule } from 'nestjs-pino';
+import { pinoHttpOptions } from '@app/logger';
 
 @Module({
   imports: [
@@ -19,7 +19,9 @@ import { NatsClientModule } from './nats/nats-client.module';
       isGlobal: true,
     }),
     NatsClientModule,
-    WinstonModule.forRoot(winstonOptions),
+    LoggerModule.forRoot({
+      pinoHttp: pinoHttpOptions,
+    }),
     DatabaseModule,
     UserModule,
     AuthModule,

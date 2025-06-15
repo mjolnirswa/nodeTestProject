@@ -1,20 +1,28 @@
-import { utilities as nestWinstonModuleUtilities } from 'nest-winston';
-import * as winston from 'winston';
+import { randomUUID } from 'crypto';
+import type { LoggerOptions } from 'pino';
 
-export const winstonOptions: winston.LoggerOptions = {
-  transports: [
-    new winston.transports.Console({
-      format: winston.format.combine(
-        winston.format.timestamp(),
-        nestWinstonModuleUtilities.format.nestLike('APP', { prettyPrint: true }),
-      ),
-    }),
-    new winston.transports.File({
-      filename: 'logs/error.log',
-      level: 'error',
-    }),
-    new winston.transports.File({
-      filename: 'logs/combined.log',
-    }),
-  ],
+export const pinoHttpOptions: LoggerOptions & { genReqId: any } = {
+  level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
+
+  redact: ['req.headers.authorization', 'req.headers.cookie'],
+
+  transport:
+    process.env.NODE_ENV !== 'production'
+      ? { target: 'pino-pretty', options: { translateTime: 'HH:MM:ss.l' } }
+      : undefined,
+
+  genReqId: (req) => req.headers['x-request-id'] ?? randomUUID(),
+
+  serializers: {
+    req: (r: any) => {
+      if (!r) return undefined;
+      return {
+        id: r.id,
+        method: r.method,
+        url: r.url,
+        remoteAddress: r.socket?.remoteAddress ?? r.connection?.remoteAddress ?? r.ip ?? 'unknown',
+      };
+    },
+    res: (res: any) => res && { statusCode: res.statusCode },
+  },
 };

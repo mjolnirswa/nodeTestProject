@@ -1,18 +1,19 @@
-import { ConflictException, Injectable, UnauthorizedException, Inject } from '@nestjs/common';
+import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { LoginDto } from './dto/login.dto';
 import * as bcrypt from 'bcrypt';
 import { plainToInstance } from 'class-transformer';
-import { LoginResponseDto } from './dto/login-responce.dto';
 import { ConfigService } from '@nestjs/config';
-import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
-import { Logger } from 'winston';
 import { InjectRepository } from '@nestjs/typeorm';
-import { RefreshToken } from './entity/refresh-token.entity';
 import { Repository } from 'typeorm';
+
+import { LoginDto } from './dto/login.dto';
+import { LoginResponseDto } from './dto/login-responce.dto';
+import { RefreshToken } from './entity/refresh-token.entity';
 import { UserService } from '../user/user.service';
 import { CreateUserDto } from '../user/dto/create-user.dto';
 import { UserResponseDto } from '../user/dto/user-responce.dto';
+
+import { PinoLogger } from 'nestjs-pino';
 
 @Injectable()
 export class AuthService {
@@ -20,45 +21,43 @@ export class AuthService {
     private readonly userService: UserService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
-    @Inject(WINSTON_MODULE_PROVIDER)
-    private readonly logger: Logger,
+    private readonly logger: PinoLogger,
     @InjectRepository(RefreshToken)
     private readonly refreshTokenRepository: Repository<RefreshToken>,
-  ) {}
+  ) {
+    this.logger.setContext(AuthService.name);
+  }
 
   async register(createUserDto: CreateUserDto): Promise<UserResponseDto> {
-    this.logger.verbose(`Регистрация пользователя с логином: ${createUserDto.login}`);
+    this.logger.debug({ login: createUserDto.login }, 'attempting registration');
 
-    const existingLogin = await this.userService.findByLogin(createUserDto.login);
-    if (existingLogin) {
-      this.logger.warn(`Регистрация провалена: логин ${createUserDto.login} уже занят`);
+    if (await this.userService.findByLogin(createUserDto.login)) {
+      this.logger.warn({ login: createUserDto.login }, 'login already taken');
       throw new ConflictException('Пользователь с таким логином уже существует');
     }
 
-    const existingEmail = await this.userService.findByEmail(createUserDto.email);
-    if (existingEmail) {
-      this.logger.warn(`Регистрация провалена: email ${createUserDto.email} уже занят`);
+    if (await this.userService.findByEmail(createUserDto.email)) {
+      this.logger.warn({ email: createUserDto.email }, 'email already taken');
       throw new ConflictException('Пользователь с таким email уже существует');
     }
 
     const user = await this.userService.create(createUserDto);
-    this.logger.log('info', `✅ Пользователь ${user.login} зарегистрирован (ID: ${user.id})`);
+    this.logger.info({ id: user.id, login: user.login }, 'user registered');
 
     return plainToInstance(UserResponseDto, user, { excludeExtraneousValues: true });
   }
 
   async login(loginDto: LoginDto): Promise<LoginResponseDto> {
-    this.logger.verbose(`Попытка входа для логина: ${loginDto.login}`);
+    this.logger.debug({ login: loginDto.login }, 'login attempt');
 
     const user = await this.userService.findByLogin(loginDto.login);
     if (!user) {
-      this.logger.warn(`Логин ${loginDto.login} не найден`);
+      this.logger.warn({ login: loginDto.login }, 'login not found');
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    const isPasswordValid = await bcrypt.compare(loginDto.password, user.password);
-    if (!isPasswordValid) {
-      this.logger.warn(`Неверный пароль для логина ${loginDto.login}`);
+    if (!(await bcrypt.compare(loginDto.password, user.password))) {
+      this.logger.warn({ login: loginDto.login }, 'wrong password');
       throw new UnauthorizedException('Invalid credentials');
     }
 
@@ -72,26 +71,24 @@ export class AuthService {
       expiresIn: this.configService.get<string>('JWT_REFRESH_TOKEN_EXPIRATION'),
     });
 
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 дней
-
     await this.refreshTokenRepository.save({
       token: refresh_token,
       user: { id: user.id },
-      expiresAt,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
     });
 
-    this.logger.log('info', `🔐 Пользователь ${user.login} вошёл в систему`);
+    this.logger.info({ id: user.id, login: user.login }, 'user logged in');
 
     return { access_token, refresh_token };
   }
 
   async refresh(refreshToken: string): Promise<LoginResponseDto> {
-    this.logger.verbose(`♻️ Запрос на обновление токена`);
+    this.logger.debug('refresh token request');
 
     try {
       await this.jwtService.verifyAsync(refreshToken);
     } catch {
-      this.logger.warn(`Не удалось декодировать refresh токен`);
+      this.logger.warn('failed to decode refresh token');
       throw new UnauthorizedException('Invalid refresh token');
     }
 
@@ -101,45 +98,36 @@ export class AuthService {
     });
 
     if (!tokenInDb || tokenInDb.expiresAt < new Date()) {
-      this.logger.warn(`Просроченный или несуществующий refresh токен`);
+      this.logger.warn('refresh token invalid or expired');
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
 
     const user = tokenInDb.user;
+    const payload = { sub: user.id };
 
-    const newPayload = { sub: user.id };
-
-    const newAccessToken = await this.jwtService.signAsync(newPayload, {
+    const access_token = await this.jwtService.signAsync(payload, {
       expiresIn: this.configService.get<string>('JWT_ACCESS_TOKEN_EXPIRATION'),
     });
 
-    const newRefreshToken = await this.jwtService.signAsync(newPayload, {
+    const new_refresh_token = await this.jwtService.signAsync(payload, {
       expiresIn: this.configService.get<string>('JWT_REFRESH_TOKEN_EXPIRATION'),
     });
 
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-
     await this.refreshTokenRepository.save({
-      token: newRefreshToken,
+      token: new_refresh_token,
       user: { id: user.id },
-      expiresAt,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
     });
-
     await this.refreshTokenRepository.delete({ token: refreshToken });
 
-    this.logger.log('info', `✅ Refresh токены обновлены для userId: ${user.id}`);
+    this.logger.info({ id: user.id }, 'refresh tokens rotated');
 
-    return {
-      access_token: newAccessToken,
-      refresh_token: newRefreshToken,
-    };
+    return { access_token, refresh_token: new_refresh_token };
   }
 
   async logout(userId: number) {
-    // Удаляем все refresh токены для этого пользователя
     await this.refreshTokenRepository.delete({ user: { id: userId } });
-
-    this.logger.log('info', `🚪 Пользователь с ID ${userId} вышел из системы`);
+    this.logger.info({ id: userId }, 'user logged out');
   }
 
   async verifyAccessToken(token: string): Promise<{ sub: number }> {
@@ -148,7 +136,7 @@ export class AuthService {
         secret: this.configService.getOrThrow<string>('JWT_SECRET'),
       });
     } catch (e) {
-      this.logger.warn(`❌ Невалидный access токен: ${e.message}`);
+      this.logger.warn({ err: e }, 'invalid access token');
       throw new UnauthorizedException('Invalid access token');
     }
   }

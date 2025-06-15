@@ -2,14 +2,16 @@ import { Module } from '@nestjs/common';
 import { NotificationServiceController } from './notification-service.controller';
 import { NotificationServiceService } from './notification-service.service';
 import { NotificationModule } from './notification/notification.module';
-import { WinstonModule } from 'nest-winston';
-import { winstonOptions } from '@app/logger';
 import { ConfigModule } from '@nestjs/config';
+import { LoggerModule } from 'nestjs-pino';
+import { pinoHttpOptions } from '@app/logger';
 
 @Module({
   imports: [
     NotificationModule,
-    WinstonModule.forRoot(winstonOptions),
+    LoggerModule.forRoot({
+      pinoHttp: pinoHttpOptions,
+    }),
     ConfigModule.forRoot({
       isGlobal: true,
     }),

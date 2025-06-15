@@ -3,6 +3,7 @@ import { AppModule } from './app.module';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { initializeTransactionalContext } from 'typeorm-transactional';
 import { JwtAuthGuard } from './auth/guard/jwt-auth.guard';
+import { Logger } from 'nestjs-pino';
 
 async function bootstrap() {
   initializeTransactionalContext();
@@ -16,6 +17,8 @@ async function bootstrap() {
     .build();
   const documentFactory = () => SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api', app, documentFactory);
+
+  app.useLogger(app.get(Logger));
 
   const reflector = app.get(Reflector);
   app.useGlobalGuards(new JwtAuthGuard(reflector));

@@ -10,11 +10,10 @@ import { plainToInstance } from 'class-transformer';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Cache } from 'cache-manager';
 import { IsolationLevel, Transactional } from 'typeorm-transactional';
-import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
-import { Logger } from 'winston';
 import { RefreshToken } from '../auth/entity/refresh-token.entity';
 import { hashPassword } from '@app/common';
 import { ClientProxy } from '@nestjs/microservices';
+import { PinoLogger } from 'nestjs-pino';
 
 @Injectable()
 export class UserService {
@@ -27,10 +26,11 @@ export class UserService {
     @InjectRepository(RefreshToken)
     private readonly refreshTokenRepository: Repository<RefreshToken>,
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
-    @Inject(WINSTON_MODULE_PROVIDER)
-    private readonly logger: Logger,
+    private readonly logger: PinoLogger,
     @Inject('NATS_CLIENT') private readonly natsClient: ClientProxy,
-  ) {}
+  ) {
+    this.logger.setContext(UserService.name);
+  }
 
   async onModuleInit() {
     await this.natsClient.connect();
@@ -45,7 +45,7 @@ export class UserService {
     });
 
     const savedUser = await this.userRepository.save(user);
-    this.logger.info(`👤 Создан пользователь: ${savedUser.login} (ID: ${savedUser.id})`);
+    this.logger.info({ id: savedUser.id, login: savedUser.login }, 'user created');
 
     return savedUser;
   }
@@ -76,7 +76,7 @@ export class UserService {
       expiresAt,
     });
 
-    this.logger.verbose(`🔑 Refresh token обновлён для userId=${userId}`);
+    this.logger.info({ userId }, 'refresh token updated');
   }
 
   async getAllUsers(page: number, limit: number, search?: string): Promise<UserResponseDto[]> {
@@ -84,11 +84,11 @@ export class UserService {
     const cached = await this.cacheManager.get<UserResponseDto[]>(cacheKey);
 
     if (cached) {
-      this.logger.verbose(`📦 Cache hit: ${cacheKey}`);
+      this.logger.debug({ cacheKey }, 'cache hit');
       return cached;
     }
 
-    this.logger.verbose(`🔍 Cache miss: ${cacheKey}`);
+    this.logger.debug({ cacheKey }, 'cache miss');
     const skip = (page - 1) * limit;
 
     const queryBuilder = this.userRepository
@@ -114,7 +114,7 @@ export class UserService {
     const user = await this.userRepository.findOneBy({ id });
 
     if (!user) {
-      this.logger.warn(`⚠️ Пользователь с ID ${id} не найден`);
+      this.logger.warn({ id }, 'user not found');
       throw new NotFoundException('User not found');
     }
 
@@ -124,23 +124,23 @@ export class UserService {
 
     Object.assign(user, updateUserDto);
     const savedUser = await this.userRepository.save(user);
-    this.logger.info(`📝 Пользователь с ID ${id} обновлён`);
+    this.logger.info({ id }, 'user updated');
 
     return plainToInstance(UserResponseDto, savedUser, { excludeExtraneousValues: true });
   }
 
   async deleteUser(id: number): Promise<void> {
     await this.userRepository.softDelete(id);
-    this.logger.info(`🗑️ Пользователь с ID ${id} удалён`);
+    this.logger.info({ id }, 'user deleted');
   }
   @Transactional({ isolationLevel: IsolationLevel.READ_COMMITTED })
   async transferBalance(fromId: number, toId: number, amount: number): Promise<void> {
-    this.logger.verbose(`💸 Перевод $${amount} от user ${fromId} к user ${toId}`);
-
     const transferAmount = Number(amount);
     if (transferAmount <= 0 || isNaN(transferAmount)) {
       throw new BadRequestException('Сумма должна быть положительным числом');
     }
+
+    this.logger.debug({ fromId, toId, amount: transferAmount }, 'starting balance transfer');
 
     await this.dataSource.transaction(async (manager) => {
       const [smallerId, largerId] = fromId < toId ? [fromId, toId] : [toId, fromId];
@@ -183,7 +183,7 @@ export class UserService {
         .execute();
     });
 
-    this.logger.info(`✅ Успешный перевод $${transferAmount} от ${fromId} к ${toId}`);
+    this.logger.info({ fromId, toId, amount: transferAmount }, 'balance transfer successful');
 
     await Promise.all([
       this.natsClient.emit('balance_updated', {
@@ -211,11 +211,11 @@ export class UserService {
     user.balance = Number((currentBalance + deposit).toFixed(2));
     await this.userRepository.save(user);
 
-    this.logger.info(`💰 Баланс пользователя ${userId} пополнен на $${deposit}`);
+    this.logger.info({ userId, amount: deposit }, 'balance topped up');
   }
 
   async getAllWithBalance(): Promise<User[]> {
-    this.logger.verbose('📊 Получение пользователей с ненулевым балансом');
+    this.logger.debug('fetch users with non-zero balance');
     return this.userRepository.find({
       where: { balance: Not(0) },
     });
