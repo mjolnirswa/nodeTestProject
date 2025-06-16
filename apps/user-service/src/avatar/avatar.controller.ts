@@ -1,12 +1,4 @@
-import {
-  Controller,
-  Post,
-  Delete,
-  Param,
-  UseGuards,
-  UseInterceptors,
-  UploadedFile,
-} from '@nestjs/common';
+import { Controller, Post, Delete, Param, UseInterceptors, UploadedFile } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { AvatarService } from './avatar.service';
 import { ValidateImagePipe } from './pipe/ValidateImage.pipe';
@@ -22,12 +14,10 @@ import {
 } from '@nestjs/swagger';
 import { CurrentUser } from '../user/decorator/current-user.decorator';
 import { User } from '../user/entity/user.entity';
-import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
 
 @ApiTags('Avatars')
 @ApiBearerAuth()
 @Controller('avatars')
-@UseGuards(JwtAuthGuard)
 export class AvatarController {
   constructor(private readonly avatarService: AvatarService) {}
 

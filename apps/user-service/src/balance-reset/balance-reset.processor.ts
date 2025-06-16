@@ -1,4 +1,3 @@
-// balance-reset.processor.ts
 import { Process, Processor } from '@nestjs/bull';
 import { Job } from 'bull';
 import { PinoLogger } from 'nestjs-pino';

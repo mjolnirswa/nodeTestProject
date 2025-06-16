@@ -1,4 +1,4 @@
-import { Body, Controller, Post, Res, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Post, Res } from '@nestjs/common';
 import {
   ApiTags,
   ApiOkResponse,
@@ -10,7 +10,6 @@ import {
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { LoginResponseDto } from './dto/login-responce.dto';
-import { JwtAuthGuard } from './guard/jwt-auth.guard';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { Public } from './decorators/public.decorator';
 import { Response } from 'express';
@@ -25,7 +24,6 @@ export class AuthController {
 
   @Public()
   @Post('register')
-  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
   @ApiOkResponse({ type: UserResponseDto, description: 'Пользователь успешно зарегистрирован' })
   @ApiBadRequestResponse({ description: 'Ошибка валидации данных при регистрации' })
   async register(@Body() createUserDto: CreateUserDto) {
@@ -34,7 +32,6 @@ export class AuthController {
 
   @Public()
   @Post('login')
-  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
   @ApiOkResponse({ type: LoginResponseDto, description: 'Успешная авторизация' })
   @ApiUnauthorizedResponse({ description: 'Неверные учетные данные' })
   async login(
@@ -61,7 +58,6 @@ export class AuthController {
     return this.authService.refresh(refreshToken);
   }
 
-  @UseGuards(JwtAuthGuard)
   @Post('logout')
   @ApiOkResponse({ description: 'Выход из системы' })
   @ApiBearerAuth()

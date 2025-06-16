@@ -9,7 +9,6 @@ import {
   Patch,
   Post,
   Query,
-  UseGuards,
 } from '@nestjs/common';
 import { UserService } from './user.service';
 import {
@@ -25,10 +24,8 @@ import { UserResponseDto } from './dto/user-responce.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { CurrentUser } from './decorator/current-user.decorator';
 import { TransferBalanceDto } from './dto/transfer-balance.dto';
-import { JwtAuthGuard } from '../auth/guard/jwt-auth.guard';
 
 @ApiTags('User')
-@UseGuards(JwtAuthGuard)
 @Controller('user')
 @ApiBearerAuth()
 export class UserController {
@@ -68,7 +65,6 @@ export class UserController {
     return this.userService.deleteUser(id);
   }
 
-  @UseGuards(JwtAuthGuard)
   @Post('transfer')
   @ApiBody({ type: TransferBalanceDto })
   @ApiOkResponse({ description: 'Перевод выполнен успешно' })

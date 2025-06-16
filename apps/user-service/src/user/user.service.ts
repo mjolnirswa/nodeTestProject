@@ -1,60 +1,55 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not, DataSource } from 'typeorm';
+import { Cache } from 'cache-manager';
+import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
+import { DataSource, Repository } from 'typeorm';
+import { IsolationLevel, Transactional } from 'typeorm-transactional';
+import { plainToInstance } from 'class-transformer';
+import { PinoLogger } from 'nestjs-pino';
+
 import { User } from './entity/user.entity';
-import { ConfigService } from '@nestjs/config';
+import { RefreshToken } from '../auth/entity/refresh-token.entity';
+import { UsersRepository } from './user.repository';
+
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserResponseDto } from './dto/user-responce.dto';
-import { plainToInstance } from 'class-transformer';
-import { CACHE_MANAGER } from '@nestjs/cache-manager';
-import { Cache } from 'cache-manager';
-import { IsolationLevel, Transactional } from 'typeorm-transactional';
-import { RefreshToken } from '../auth/entity/refresh-token.entity';
+
 import { hashPassword } from '@app/common';
-import { ClientProxy } from '@nestjs/microservices';
-import { PinoLogger } from 'nestjs-pino';
-import { InjectMetric } from '@willsoto/nestjs-prometheus';
-import { Counter, Histogram } from 'prom-client';
+import { MetricsService } from '../metrics/metrics.service';
+import { NatsEventBusService } from '../nats/nats-event-bus.service';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
 
 @Injectable()
 export class UserService {
   constructor(
-    @InjectRepository(User)
-    private readonly userRepository: Repository<User>,
-    private readonly configService: ConfigService,
+    private readonly usersRepo: UsersRepository,
+    private readonly metrics: MetricsService,
+    private readonly bus: NatsEventBusService,
+
     @InjectDataSource()
     private readonly dataSource: DataSource,
+
     @InjectRepository(RefreshToken)
     private readonly refreshTokenRepository: Repository<RefreshToken>,
-    @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
+
+    @Inject(CACHE_MANAGER)
+    private readonly cache: Cache,
+
     private readonly logger: PinoLogger,
-    @Inject('NATS_CLIENT') private readonly natsClient: ClientProxy,
-    @InjectMetric('user_created_total')
-    private readonly userCreatedTotal: Counter<string>,
-    @InjectMetric('user_create_duration_seconds')
-    private readonly userCreateDuration: Histogram<string>,
-    @InjectMetric('balance_transfer_total')
-    private readonly transferTotal: Counter<'result'>,
-    @InjectMetric('balance_transfer_duration_seconds')
-    private readonly transferDuration: Histogram,
   ) {
     this.logger.setContext(UserService.name);
   }
 
-  async onModuleInit() {
-    await this.natsClient.connect();
-  }
-
-  async create(createUserDto: CreateUserDto): Promise<User> {
-    const end = this.userCreateDuration.startTimer();
+  async create(dto: CreateUserDto): Promise<User> {
+    const end = this.metrics.startUserCreateTimer();
 
     try {
-      const hashedPassword = await hashPassword(createUserDto.password);
-      const user = this.userRepository.create({ ...createUserDto, password: hashedPassword });
-      const saved = await this.userRepository.save(user);
+      const hashed = await hashPassword(dto.password);
+      const user = this.dataSource.getRepository(User).create({ ...dto, password: hashed });
 
-      this.userCreatedTotal.inc();
+      const [saved] = await this.usersRepo.saveMany([user]);
+
+      this.metrics.incUserCreated();
       this.logger.info({ id: saved.id, login: saved.login }, 'user created');
       return saved;
     } finally {
@@ -63,184 +58,122 @@ export class UserService {
   }
 
   async findById(id: number): Promise<User | null> {
-    return this.userRepository.findOne({
-      where: { id },
-      relations: ['avatars'],
-    });
+    return this.usersRepo.findByIdWithAvatars(id);
+  }
+  async findByEmail(email: string) {
+    return this.usersRepo.findByEmail(email);
+  }
+  async findByLogin(login: string) {
+    return this.usersRepo.findByLogin(login);
   }
 
-  async findByEmail(email: string): Promise<User | null> {
-    return this.userRepository.findOneBy({ email });
-  }
-
-  async findByLogin(login: string): Promise<User | null> {
-    return this.userRepository.findOneBy({ login });
-  }
-
-  async updateRefreshToken(userId: number, refreshToken: string): Promise<void> {
-    await this.refreshTokenRepository.delete({ user: { id: userId } });
-
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 дней
-
-    await this.refreshTokenRepository.save({
-      token: refreshToken,
-      user: { id: userId },
-      expiresAt,
-    });
-
-    this.logger.info({ userId }, 'refresh token updated');
-  }
-
-  async getAllUsers(page: number, limit: number, search?: string): Promise<UserResponseDto[]> {
-    const cacheKey = `users:page=${page}&limit=${limit}&search=${search ?? ''}`;
-    const cached = await this.cacheManager.get<UserResponseDto[]>(cacheKey);
-
-    if (cached) {
-      this.logger.debug({ cacheKey }, 'cache hit');
-      return cached;
-    }
-
-    this.logger.debug({ cacheKey }, 'cache miss');
-    const skip = (page - 1) * limit;
-
-    const queryBuilder = this.userRepository
-      .createQueryBuilder('user')
-      .leftJoinAndSelect('user.avatars', 'avatars')
-      .skip(skip)
-      .take(limit);
-
-    if (search) {
-      queryBuilder.where('user.login ILIKE :search', { search: `%${search}%` });
-    }
-
-    const users = await queryBuilder.getMany();
-    const dto = plainToInstance(UserResponseDto, users, { excludeExtraneousValues: true });
-
-    await this.cacheManager.set(cacheKey, dto, 30 * 1000);
-    this.logger.debug(`📄 Пользователей найдено: ${users.length}`);
-
-    return dto;
-  }
-
-  async updateUser(id: number, updateUserDto: UpdateUserDto): Promise<UserResponseDto> {
-    const user = await this.userRepository.findOneBy({ id });
-
+  async updateUser(id: number, dto: UpdateUserDto): Promise<UserResponseDto> {
+    const user = await this.usersRepo.findByIdWithAvatars(id);
     if (!user) {
       this.logger.warn({ id }, 'user not found');
       throw new NotFoundException('User not found');
     }
 
-    if (updateUserDto.password) {
-      updateUserDto.password = await hashPassword(updateUserDto.password);
-    }
+    if (dto.password) dto.password = await hashPassword(dto.password);
 
-    Object.assign(user, updateUserDto);
-    const savedUser = await this.userRepository.save(user);
+    Object.assign(user, dto);
+    const [saved] = await this.usersRepo.saveMany([user]);
+
     this.logger.info({ id }, 'user updated');
-
-    return plainToInstance(UserResponseDto, savedUser, { excludeExtraneousValues: true });
+    return plainToInstance(UserResponseDto, saved, {
+      excludeExtraneousValues: true,
+    });
   }
 
   async deleteUser(id: number): Promise<void> {
-    await this.userRepository.softDelete(id);
+    await this.usersRepo.softDelete(id);
     this.logger.info({ id }, 'user deleted');
+  }
+
+  async getAllUsers(page: number, limit: number, search?: string): Promise<UserResponseDto[]> {
+    const key = `users:p=${page}&l=${limit}&q=${search ?? ''}`;
+    const cached = await this.cache.get<UserResponseDto[]>(key);
+    if (cached) {
+      this.logger.debug({ key }, 'cache hit');
+      return cached;
+    }
+
+    this.logger.debug({ key }, 'cache miss');
+    const users = await this.usersRepo.paginate(page, limit, search);
+    const dto = plainToInstance(UserResponseDto, users, {
+      excludeExtraneousValues: true,
+    });
+
+    await this.cache.set(key, dto, 30_000);
+    this.logger.debug(`📄 Users found: ${users.length}`);
+    return dto;
   }
 
   @Transactional({ isolationLevel: IsolationLevel.READ_COMMITTED })
   async transferBalance(fromId: number, toId: number, amount: number): Promise<void> {
-    const transferAmount = Number(amount);
-    if (transferAmount <= 0 || Number.isNaN(transferAmount)) {
+    const value = Number(amount);
+    if (value <= 0 || Number.isNaN(value)) {
       throw new BadRequestException('Сумма должна быть положительным числом');
     }
 
-    const stopDuration = this.transferDuration.startTimer();
-    let resultLabel: 'success' | 'error' = 'success';
+    const stop = this.metrics.startTransferTimer();
+    let result: 'success' | 'error' = 'success';
 
     try {
-      this.logger.debug({ fromId, toId, amount: transferAmount }, 'starting balance transfer');
+      this.logger.debug({ fromId, toId, amount: value }, 'starting transfer');
 
       await this.dataSource.transaction(async (manager) => {
-        const [smallerId, largerId] = fromId < toId ? [fromId, toId] : [toId, fromId];
+        const [a, b] = fromId < toId ? [fromId, toId] : [toId, fromId];
 
-        const users = await manager
-          .createQueryBuilder(User, 'user')
-          .setLock('pessimistic_write')
-          .where('user.id IN (:...ids)', { ids: [smallerId, largerId] })
-          .orderBy('user.id', 'ASC')
-          .getMany();
-
+        const users = await this.usersRepo.lockUsersForTransfer([a, b], manager);
         if (users.length !== 2) throw new NotFoundException('Один или оба пользователя не найдены');
 
         const fromUser = users.find((u) => u.id === fromId)!;
-
-        if (Number(fromUser.balance) < transferAmount) {
+        if (Number(fromUser.balance) < value) {
           throw new BadRequestException('Недостаточно средств');
         }
 
-        await manager
-          .createQueryBuilder()
-          .update(User)
-          .set({
-            balance: () => `
-            CASE
-              WHEN id = :fromId THEN balance - :amount
-              WHEN id = :toId   THEN balance + :amount
-              ELSE balance
-            END`,
-          })
-          .where('id IN (:...ids)', { ids: [fromId, toId] })
-          .setParameters({ fromId, toId, amount: transferAmount })
-          .execute();
+        await this.usersRepo.updateBalances(fromId, toId, value, manager);
       });
 
-      this.transferTotal.inc({ result: 'success' });
-      this.logger.info({ fromId, toId, amount: transferAmount }, 'balance transfer successful');
+      this.metrics.incTransfer('success');
+      this.logger.info({ fromId, toId, amount: value }, 'balance transfer successful');
 
       await Promise.all([
-        this.natsClient.emit('balance_updated', {
-          userId: fromId.toString(),
-          amount: -transferAmount,
-        }),
-        this.natsClient.emit('balance_updated', {
-          userId: toId.toString(),
-          amount: transferAmount,
-        }),
+        this.bus.emitBalanceUpdated(fromId, -value),
+        this.bus.emitBalanceUpdated(toId, value),
       ]);
-    } catch (error) {
-      resultLabel = 'error';
-      this.transferTotal.inc({ result: 'error' });
-      this.logger.error({ err: error, fromId, toId }, 'balance transfer failed');
-      throw error;
+    } catch (e) {
+      result = 'error';
+      this.metrics.incTransfer('error');
+      this.logger.error({ err: e, fromId, toId }, 'balance transfer failed');
+      throw e;
     } finally {
-      stopDuration({ result: resultLabel });
+      stop({ result });
     }
   }
 
   async addBalance(userId: number, amount: number): Promise<void> {
-    const user = await this.userRepository.findOneBy({ id: userId });
+    const user = await this.usersRepo.findByIdWithAvatars(userId);
     if (!user) throw new NotFoundException('Пользователь не найден');
 
-    const currentBalance = Number(user.balance);
     const deposit = Number(amount);
-
-    if (deposit <= 0 || isNaN(deposit)) {
+    if (deposit <= 0 || Number.isNaN(deposit)) {
       throw new BadRequestException('Сумма должна быть положительным числом');
     }
 
-    user.balance = Number((currentBalance + deposit).toFixed(2));
-    await this.userRepository.save(user);
+    user.balance = Number((Number(user.balance) + deposit).toFixed(2));
+    await this.usersRepo.saveMany([user]);
 
     this.logger.info({ userId, amount: deposit }, 'balance topped up');
   }
 
-  async getAllWithBalance(): Promise<User[]> {
+  getAllWithBalance() {
     this.logger.debug('fetch users with non-zero balance');
-    return this.userRepository.find({
-      where: { balance: Not(0) },
-    });
+    return this.usersRepo.findWithNonZeroBalance();
   }
 
-  async saveMany(users: User[]): Promise<void> {
-    await this.userRepository.save(users);
+  saveMany(users: User[]) {
+    return this.usersRepo.saveMany(users);
   }
 }
